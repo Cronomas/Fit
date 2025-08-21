@@ -1,0 +1,46 @@
+-- Table for managing user profiles
+CREATE TABLE IF NOT EXISTS users (
+    user_id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    weight_kg DECIMAL
+);
+
+-- Table for tracking friend connections
+CREATE TABLE IF NOT EXISTS friends (
+    user_id INTEGER REFERENCES users(user_id) ON DELETE CASCADE,
+    friend_id INTEGER REFERENCES users(user_id) ON DELETE CASCADE,
+    PRIMARY KEY (user_id, friend_id),
+    CHECK (user_id != friend_id)
+);
+
+-- Table for logging workouts
+CREATE TABLE IF NOT EXISTS workouts (
+    workout_id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(user_id) ON DELETE CASCADE,
+    workout_date DATE NOT NULL,
+    duration_minutes INTEGER NOT NULL,
+    UNIQUE(user_id, workout_date)
+);
+
+-- Table for storing details of exercises performed in a workout
+CREATE TABLE IF NOT EXISTS exercises (
+    exercise_id SERIAL PRIMARY KEY,
+    workout_id INTEGER REFERENCES workouts(workout_id) ON DELETE CASCADE,
+    exercise_name VARCHAR(255) NOT NULL,
+    reps INTEGER,
+    sets INTEGER,
+    weight_lifted_kg DECIMAL
+);
+
+-- Table for setting and tracking fitness goals
+CREATE TABLE IF NOT EXISTS goals (
+    goal_id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(user_id) ON DELETE CASCADE,
+    goal_type VARCHAR(50) NOT NULL,
+    target_value INTEGER NOT NULL,
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    is_completed BOOLEAN DEFAULT FALSE
+);
+SELECT * FROM goals;
