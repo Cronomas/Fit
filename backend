@@ -1,0 +1,298 @@
+# backend_lin_acid.py
+import psycopg2
+import pandas as pd
+from datetime import date
+
+class FitnessTrackerDB:
+    def __init__(self, dbname, user, password, host):
+        self.conn = None
+        self.cursor = None
+        self.dbname = postgres
+        self.user = postgres
+        self.password = 2122
+        self.host = host
+        self.connect()
+    
+    def connect(self):
+        """Connect to the PostgreSQL database."""
+        try:
+            self.conn = psycopg2.connect(
+                dbname=self.dbname,
+                user=self.user,
+                password=self.password,
+                host=self.host
+            )
+            # The 'with self.conn:' block in psycopg2 handles transactions,
+            # committing on success and rolling back on exceptions.
+            print("Database connected successfully.")
+        except psycopg2.OperationalError as e:
+            print(f"Error connecting to the database: {e}")
+
+    def close(self):
+        """Close the database connection."""
+        if self.conn:
+            self.cursor.close()
+            self.conn.close()
+            print("Database connection closed.")
+
+    def create_schema(self):
+        """Create tables for the fitness tracker application."""
+        create_user_table = """
+        CREATE TABLE IF NOT EXISTS users (
+            user_id SERIAL PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            email VARCHAR(255) UNIQUE NOT NULL,
+            weight_kg DECIMAL
+        );
+        """
+        create_friends_table = """
+        CREATE TABLE IF NOT EXISTS friends (
+            user_id INTEGER REFERENCES users(user_id) ON DELETE CASCADE,
+            friend_id INTEGER REFERENCES users(user_id) ON DELETE CASCADE,
+            PRIMARY KEY (user_id, friend_id),
+            CHECK (user_id != friend_id)
+        );
+        """
+        create_workouts_table = """
+        CREATE TABLE IF NOT EXISTS workouts (
+            workout_id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(user_id) ON DELETE CASCADE,
+            workout_date DATE NOT NULL,
+            duration_minutes INTEGER NOT NULL,
+            UNIQUE(user_id, workout_date)
+        );
+        """
+        create_exercises_table = """
+        CREATE TABLE IF NOT EXISTS exercises (
+            exercise_id SERIAL PRIMARY KEY,
+            workout_id INTEGER REFERENCES workouts(workout_id) ON DELETE CASCADE,
+            exercise_name VARCHAR(255) NOT NULL,
+            reps INTEGER,
+            sets INTEGER,
+            weight_lifted_kg DECIMAL
+        );
+        """
+        create_goals_table = """
+        CREATE TABLE IF NOT EXISTS goals (
+            goal_id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(user_id) ON DELETE CASCADE,
+            goal_type VARCHAR(50) NOT NULL,
+            target_value INTEGER NOT NULL,
+            start_date DATE NOT NULL,
+            end_date DATE NOT NULL,
+            is_completed BOOLEAN DEFAULT FALSE
+        );
+        """
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute(create_user_table)
+                cursor.execute(create_friends_table)
+                cursor.execute(create_workouts_table)
+                cursor.execute(create_exercises_table)
+                cursor.execute(create_goals_table)
+            self.conn.commit()
+            print("Schema created successfully.")
+        except Exception as e:
+            # The 'with' block would handle rollback, but explicit rollback is still good practice for larger operations
+            self.conn.rollback()
+            print(f"Error creating schema: {e}")
+
+    # CRUD Operations for Users
+    def create_user(self, name, email, weight):
+        """Create a new user profile. ACID: Ensures user creation is a single transaction."""
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute(
+                    "INSERT INTO users (name, email, weight_kg) VALUES (%s, %s, %s) RETURNING user_id;",
+                    (name, email, weight)
+                )
+                user_id = cursor.fetchone()[0]
+                return user_id
+        except psycopg2.IntegrityError:
+            return "Email already exists."
+        except Exception as e:
+            print(f"Error creating user: {e}")
+            return None
+
+    def get_user_by_email(self, email):
+        """Retrieve user details by email."""
+        with self.conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT user_id, name, email, weight_kg FROM users WHERE email = %s;",
+                (email,)
+            )
+            return cursor.fetchone()
+
+    def update_user_profile(self, user_id, name, email, weight):
+        """Update a user's profile. ACID: Ensures profile update is a single transaction."""
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE users SET name = %s, email = %s, weight_kg = %s WHERE user_id = %s;",
+                    (name, email, weight, user_id)
+                )
+            return True
+        except Exception as e:
+            print(f"Error updating user profile: {e}")
+            return False
+
+    def delete_user(self, user_id):
+        """Delete a user. ACID: Ensures user deletion is a single transaction."""
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute("DELETE FROM users WHERE user_id = %s;", (user_id,))
+            return True
+        except Exception as e:
+            print(f"Error deleting user: {e}")
+            return False
+            
+    # Friend Management
+    def add_friend(self, user_id, friend_id):
+        """Add a friend connection. ACID: Ensures friendship is added atomically."""
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute(
+                    "INSERT INTO friends (user_id, friend_id) VALUES (%s, %s);",
+                    (user_id, friend_id)
+                )
+            return True
+        except psycopg2.IntegrityError:
+            return "Friendship already exists."
+        except Exception as e:
+            print(f"Error adding friend: {e}")
+            return False
+
+    def remove_friend(self, user_id, friend_id):
+        """Remove a friend connection. ACID: Ensures friend removal is atomic."""
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM friends WHERE (user_id = %s AND friend_id = %s) OR (user_id = %s AND friend_id = %s);",
+                    (user_id, friend_id, friend_id, user_id)
+                )
+            return True
+        except Exception as e:
+            print(f"Error removing friend: {e}")
+            return False
+    
+    def get_friends(self, user_id):
+        """Retrieve a list of a user's friends."""
+        with self.conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT u.user_id, u.name, u.email
+                FROM friends f
+                JOIN users u ON f.friend_id = u.user_id
+                WHERE f.user_id = %s;
+            """, (user_id,))
+            return cursor.fetchall()
+
+    # Workout and Exercise Management
+    def log_workout(self, user_id, workout_date, duration_minutes, exercises):
+        """
+        Log a new workout with associated exercises.
+        ACID: All operations are part of a single transaction. If any part (workout or
+        any exercise) fails, the entire transaction is rolled back.
+        """
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute(
+                    "INSERT INTO workouts (user_id, workout_date, duration_minutes) VALUES (%s, %s, %s) RETURNING workout_id;",
+                    (user_id, workout_date, duration_minutes)
+                )
+                workout_id = cursor.fetchone()[0]
+                for exercise in exercises:
+                    cursor.execute(
+                        """
+                        INSERT INTO exercises (workout_id, exercise_name, reps, sets, weight_lifted_kg)
+                        VALUES (%s, %s, %s, %s, %s);
+                        """,
+                        (workout_id, exercise['name'], exercise['reps'], exercise['sets'], exercise['weight'])
+                    )
+            return True
+        except psycopg2.IntegrityError:
+            return "A workout for this date already exists. Please delete the old one or choose a different date."
+        except Exception as e:
+            print(f"Error logging workout: {e}")
+            return False
+
+    def get_user_workouts(self, user_id):
+        """Retrieve a user's workout history."""
+        with self.conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT w.workout_date, w.duration_minutes, e.exercise_name, e.reps, e.sets, e.weight_lifted_kg
+                FROM workouts w
+                JOIN exercises e ON w.workout_id = e.exercise_id
+                WHERE w.user_id = %s
+                ORDER BY w.workout_date DESC;
+            """, (user_id,))
+            return cursor.fetchall()
+        
+    def get_user_workouts_df(self, user_id):
+        """Retrieve a user's workout history as a pandas DataFrame."""
+        with self.conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT w.workout_date, w.duration_minutes, e.exercise_name, e.reps, e.sets, e.weight_lifted_kg
+                FROM workouts w
+                JOIN exercises e ON w.workout_id = e.workout_id
+                WHERE w.user_id = %s
+                ORDER BY w.workout_date DESC;
+            """, (user_id,))
+            data = cursor.fetchall()
+            columns = ['date', 'duration', 'exercise', 'reps', 'sets', 'weight']
+            df = pd.DataFrame(data, columns=columns)
+            return df
+
+    # Goals
+    def set_goal(self, user_id, goal_type, target_value, start_date, end_date):
+        """Set a new fitness goal for the user. ACID: Ensures goal creation is atomic."""
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute(
+                    "INSERT INTO goals (user_id, goal_type, target_value, start_date, end_date) VALUES (%s, %s, %s, %s, %s);",
+                    (user_id, goal_type, target_value, start_date, end_date)
+                )
+            return True
+        except Exception as e:
+            print(f"Error setting goal: {e}")
+            return False
+            
+    def get_user_goals(self, user_id):
+        """Retrieve a user's goals."""
+        with self.conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT goal_id, goal_type, target_value, start_date, end_date, is_completed FROM goals WHERE user_id = %s;",
+                (user_id,)
+            )
+            return cursor.fetchall()
+
+    def update_goal_status(self, goal_id, is_completed):
+        """Update the completion status of a goal. ACID: Ensures update is atomic."""
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE goals SET is_completed = %s WHERE goal_id = %s;",
+                    (is_completed, goal_id)
+                )
+            return True
+        except Exception as e:
+            print(f"Error updating goal status: {e}")
+            return False
+
+    # Aggregations for Leaderboard
+    def get_weekly_leaderboard(self):
+        """Calculate and return a leaderboard based on total workout minutes for the current week."""
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT u.name, SUM(w.duration_minutes) AS total_minutes
+                    FROM workouts w
+                    JOIN users u ON w.user_id = u.user_id
+                    WHERE w.workout_date >= date_trunc('week', current_date)
+                    AND w.workout_date < date_trunc('week', current_date) + INTERVAL '7 days'
+                    GROUP BY u.name
+                    ORDER BY total_minutes DESC;
+                """)
+                return cursor.fetchall()
+        except Exception as e:
+            print(f"Error generating leaderboard: {e}")
+            return []
