@@ -1,0 +1,286 @@
+# frontend_fin.py
+import streamlit as st
+import pandas as pd
+from backend_lin import FitnessTrackerDB
+from datetime import date, timedelta
+import matplotlib.pyplot as plt
+
+# Database connection details
+DB_NAME = "fitness_tracker"
+DB_USER = "your_username"  # Replace with your PostgreSQL username
+DB_PASSWORD = "your_password"  # Replace with your PostgreSQL password
+DB_HOST = "localhost"
+
+# Create a database connection instance
+@st.cache_resource
+def get_db():
+    db = FitnessTrackerDB(DB_NAME, DB_USER, DB_PASSWORD, DB_HOST)
+    db.create_schema()
+    return db
+
+db = get_db()
+
+# Session state to manage current user
+if 'user_id' not in st.session_state:
+    st.session_state.user_id = None
+if 'user_email' not in st.session_state:
+    st.session_state.user_email = None
+
+def main():
+    st.title("💪 Personal Fitness Tracker")
+
+    if st.session_state.user_id is None:
+        login_or_register()
+    else:
+        st.sidebar.header(f"Welcome, {st.session_state.user_name}!")
+        st.sidebar.button("Logout", on_click=logout)
+        app_pages()
+
+def login_or_register():
+    st.header("Login or Register")
+    choice = st.radio("Choose an option:", ["Login", "Register"])
+    
+    if choice == "Login":
+        email = st.text_input("Email")
+        if st.button("Login"):
+            user = db.get_user_by_email(email)
+            if user:
+                st.session_state.user_id = user[0]
+                st.session_state.user_name = user[1]
+                st.session_state.user_email = user[2]
+                st.success(f"Successfully logged in as {st.session_state.user_name}!")
+                st.rerun()
+            else:
+                st.error("User not found. Please register or check your email.")
+    
+    elif choice == "Register":
+        name = st.text_input("Name")
+        email = st.text_input("Email")
+        weight = st.number_input("Weight (kg)", min_value=1.0)
+        if st.button("Register"):
+            result = db.create_user(name, email, weight)
+            if result and isinstance(result, int):
+                st.success("Registration successful! You can now log in.")
+            elif result == "Email already exists.":
+                st.error("This email is already registered.")
+            else:
+                st.error("An error occurred during registration.")
+
+def logout():
+    st.session_state.user_id = None
+    st.session_state.user_email = None
+    st.session_state.user_name = None
+    st.success("Logged out successfully.")
+    st.rerun()
+
+def app_pages():
+    st.sidebar.title("Navigation")
+    page = st.sidebar.radio(
+        "Go to:",
+        ["Profile", "Log a Workout", "Workout History", "Manage Friends", "Goals", "Leaderboard"]
+    )
+    
+    if page == "Profile":
+        show_profile()
+    elif page == "Log a Workout":
+        log_workout_page()
+    elif page == "Workout History":
+        show_workout_history()
+    elif page == "Manage Friends":
+        manage_friends_page()
+    elif page == "Goals":
+        goals_page()
+    elif page == "Leaderboard":
+        show_leaderboard()
+
+def show_profile():
+    st.header("👤 Your Profile")
+    user = db.get_user_by_email(st.session_state.user_email)
+    if user:
+        st.write(f"**Name:** {user[1]}")
+        st.write(f"**Email:** {user[2]}")
+        st.write(f"**Weight:** {user[3]} kg")
+
+        st.subheader("Update Profile")
+        with st.form("update_profile_form"):
+            new_name = st.text_input("New Name", value=user[1])
+            new_email = st.text_input("New Email", value=user[2])
+            new_weight = st.number_input("New Weight (kg)", min_value=1.0, value=float(user[3]))
+            submitted = st.form_submit_button("Update")
+            if submitted:
+                if db.update_user_profile(st.session_state.user_id, new_name, new_email, new_weight):
+                    st.success("Profile updated successfully!")
+                    st.session_state.user_name = new_name
+                    st.session_state.user_email = new_email
+                    st.rerun()
+                else:
+                    st.error("Failed to update profile.")
+
+def log_workout_page():
+    st.header("🏋️ Log a New Workout")
+    workout_date = st.date_input("Date", date.today())
+    duration = st.number_input("Duration (minutes)", min_value=1, value=30)
+    
+    st.subheader("Add Exercises")
+    
+    # Store exercises in session state
+    if 'exercises' not in st.session_state:
+        st.session_state.exercises = []
+
+    def add_exercise():
+        st.session_state.exercises.append({'name': '', 'reps': 0, 'sets': 0, 'weight': 0.0})
+
+    if st.button("Add Exercise"):
+        add_exercise()
+
+    exercises_form = []
+    for i, exercise in enumerate(st.session_state.exercises):
+        st.write(f"**Exercise {i+1}**")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            name = st.text_input("Name", key=f"name_{i}", value=exercise['name'])
+        with col2:
+            sets = st.number_input("Sets", min_value=1, key=f"sets_{i}", value=exercise['sets'])
+        with col3:
+            reps = st.number_input("Reps", min_value=1, key=f"reps_{i}", value=exercise['reps'])
+        with col4:
+            weight = st.number_input("Weight (kg)", min_value=0.0, key=f"weight_{i}", value=float(exercise['weight']))
+        
+        exercises_form.append({'name': name, 'sets': sets, 'reps': reps, 'weight': weight})
+    
+    if st.button("Log Workout"):
+        # Validate all exercises have a name
+        if not all(ex['name'] for ex in exercises_form):
+            st.error("All exercises must have a name.")
+        elif db.log_workout(st.session_state.user_id, workout_date, duration, exercises_form):
+            st.success("Workout logged successfully!")
+            st.session_state.exercises = [] # Reset exercises after logging
+            st.rerun()
+        else:
+            st.error("Failed to log workout. A workout for this date may already exist.")
+
+def show_workout_history():
+    st.header("📊 Workout History and Progress")
+    df_workouts = db.get_user_workouts_df(st.session_state.user_id)
+    if not df_workouts.empty:
+        st.write("### Your Workouts")
+        st.dataframe(df_workouts)
+
+        st.write("### Progress Over Time")
+        # Ensure 'date' is a datetime object
+        df_workouts['date'] = pd.to_datetime(df_workouts['date'])
+        
+        # Plotting workout duration
+        st.subheader("Workout Duration Over Time")
+        fig, ax = plt.subplots()
+        df_workouts.groupby(df_workouts['date'])['duration'].sum().plot(kind='line', ax=ax, marker='o')
+        ax.set_xlabel("Date")
+        ax.set_ylabel("Total Duration (minutes)")
+        ax.set_title("Total Workout Duration per Day")
+        st.pyplot(fig)
+
+        # Plotting total weight lifted for specific exercises
+        st.subheader("Total Weight Lifted Over Time")
+        unique_exercises = df_workouts['exercise'].unique()
+        if unique_exercises.size > 0:
+            selected_exercise = st.selectbox("Select an exercise to visualize:", unique_exercises)
+            df_exercise = df_workouts[df_workouts['exercise'] == selected_exercise]
+            df_exercise['total_weight_lifted'] = df_exercise['reps'] * df_exercise['sets'] * df_exercise['weight']
+            
+            fig2, ax2 = plt.subplots()
+            df_exercise.groupby(df_exercise['date'])['total_weight_lifted'].sum().plot(kind='line', ax=ax2, marker='o')
+            ax2.set_xlabel("Date")
+            ax2.set_ylabel("Total Weight Lifted (kg)")
+            ax2.set_title(f"Total Weight Lifted for {selected_exercise} per Day")
+            st.pyplot(fig2)
+    else:
+        st.info("You have not logged any workouts yet.")
+        
+def manage_friends_page():
+    st.header("👥 Manage Your Friends")
+    
+    st.subheader("Add a Friend")
+    friend_email = st.text_input("Enter friend's email to add")
+    if st.button("Add Friend"):
+        friend = db.get_user_by_email(friend_email)
+        if friend:
+            result = db.add_friend(st.session_state.user_id, friend[0])
+            if result is True:
+                st.success(f"Successfully added {friend[1]} as a friend!")
+            else:
+                st.warning(result)
+        else:
+            st.error("No user found with that email.")
+
+    st.subheader("Your Friends List")
+    friends = db.get_friends(st.session_state.user_id)
+    if friends:
+        friends_df = pd.DataFrame(friends, columns=["ID", "Name", "Email"])
+        st.dataframe(friends_df)
+
+        st.subheader("Remove a Friend")
+        friend_to_remove = st.selectbox("Select a friend to remove:", options=[f[1] for f in friends])
+        if st.button("Remove Selected Friend"):
+            friend_id_to_remove = [f[0] for f in friends if f[1] == friend_to_remove][0]
+            if db.remove_friend(st.session_state.user_id, friend_id_to_remove):
+                st.success(f"Successfully removed {friend_to_remove}.")
+                st.rerun()
+            else:
+                st.error("Failed to remove friend.")
+    else:
+        st.info("You have no friends yet. Add some!")
+
+def goals_page():
+    st.header("🎯 Set and Track Your Goals")
+    
+    st.subheader("Set a New Goal")
+    with st.form("new_goal_form"):
+        goal_type = st.selectbox("Goal Type:", ["Workout Frequency (times per week)"])
+        target_value = st.number_input("Target Value", min_value=1, value=5)
+        
+        today = date.today()
+        start_date = st.date_input("Start Date", today)
+        end_date = st.date_input("End Date", today + timedelta(weeks=4))
+        
+        submitted = st.form_submit_button("Set Goal")
+        if submitted:
+            if db.set_goal(st.session_state.user_id, goal_type, target_value, start_date, end_date):
+                st.success("Goal set successfully!")
+                st.rerun()
+            else:
+                st.error("Failed to set goal.")
+
+    st.subheader("Your Current Goals")
+    goals = db.get_user_goals(st.session_state.user_id)
+    if goals:
+        goals_df = pd.DataFrame(goals, columns=["ID", "Type", "Target", "Start Date", "End Date", "Completed"])
+        st.dataframe(goals_df)
+        
+        goal_to_update = st.selectbox("Select a goal to update:", options=[f"Goal ID {g[0]}: {g[1]}" for g in goals])
+        goal_id_to_update = int(goal_to_update.split(":")[0].replace("Goal ID ", ""))
+        is_completed = st.checkbox("Mark as completed", value=any(g[5] for g in goals if g[0] == goal_id_to_update))
+
+        if st.button("Update Goal Status"):
+            if db.update_goal_status(goal_id_to_update, is_completed):
+                st.success("Goal status updated!")
+                st.rerun()
+            else:
+                st.error("Failed to update goal status.")
+    else:
+        st.info("You have no goals set yet.")
+        
+def show_leaderboard():
+    st.header("🏆 Friends Leaderboard")
+    st.write("Ranking based on total workout minutes for the current week.")
+
+    leaderboard = db.get_weekly_leaderboard()
+    if leaderboard:
+        leaderboard_df = pd.DataFrame(leaderboard, columns=["Name", "Total Workout Minutes"])
+        leaderboard_df['Rank'] = leaderboard_df['Total Workout Minutes'].rank(ascending=False, method='min').astype(int)
+        leaderboard_df.set_index('Rank', inplace=True)
+        st.dataframe(leaderboard_df)
+    else:
+        st.info("No workouts logged by you or your friends this week yet.")
+
+if __name__ == "__main__":
+    main()
